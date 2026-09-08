@@ -1,0 +1,1715 @@
+##Harmonised Landsat and Sentinel data extraction
+We are extracting Harmonised Landsat and Sentinel evi data for trial sites with mortality date 2016 onwards (when HLS started collection data consistently). We will then compare with MODIS to assess whether the better spatial resolution can improve forest mortality detection.
+
+Possible outcomes:
+1. HLS decline starts earlier than MODIS = very strong result
+2. Same timing of decline but larger magnitude for HLS
+3. Spatial comparison - compare imagery pre and post mortality. HLS change in NDVI will reveal mortality patterns often hidden in MODIS pixel.
+4. Formal (statistical) evaluation (for all sites): Calculate for each mortality event:
+(i) Pre-event mean
+(ii) Post event mean
+(iii) % decline
+For MODIS NDVI, HLS NDVI and HLS EVI
+Compare distributions > median decline e.g. MODIS -12%, HLS -24%, EVI -31%
+
+###1. Colab set up - install packages and initialise GEE
+
+!pip install geemap
+
+import ee
+import geemap
+import pandas as pd
+import numpy as np
+import re
+
+ee.Authenticate()
+ee.Initialize(project='ee1-jennyshep')
+
+###2.Load datasets - MODIS and HLS
+
+modis = pd.read_csv( "/content/drive/MyDrive/master_dataset_cleaned.csv")
+hls_ndvi = pd.read_csv("/content/drive/MyDrive/HLS_exports/HLS_monthly_NDVI.csv")
+hls_evi = pd.read_csv("/content/drive/MyDrive/HLS_exports/HLS_monthly_EVI_final_v2.csv")
+site_meta = pd.read_csv("/content/drive/MyDrive/v10_trial sites_mort dates_no_mismatch.csv")
+
+for name, df in {
+    "MODIS": modis,
+    "HLS_NDVI": hls_ndvi,
+    "HLS_EVI": hls_evi,
+    "SITE_META": site_meta
+}.items():
+    print(f"\n{name}")
+    print(df.shape)
+    print(df.columns.tolist())
+    display(df.head())
+
+attach coordinates to HLS
+
+hls_ndvi = hls_ndvi.merge(
+    site_meta[['Plot_ID','Lat','Long','Mort_Year_observed']],
+    left_on='site_id',
+    right_on='Plot_ID',
+    how='left'
+)
+
+extract unique MODIS sites
+
+modis_sites = (
+    modis[['plot_id','lat','long']]
+    .drop_duplicates().head(20)
+)
+
+set(site_meta['Plot_ID']) & set(hls_ndvi['site_id'])
+
+set(site_meta['Plot_ID']) & set(modis['plot_id'])
+
+modis[['plot_id','lat','long']].drop_duplicates().head(20)
+
+###3. Standardise site names
+
+print(site_meta.columns.tolist())
+
+site_meta[
+    ["Site_ID", "Plot_ID"]
+].head(30)
+
+site_meta.columns = (
+    site_meta.columns
+    .str.strip()
+    .str.lower()
+    .str.replace(" ", "_")
+)
+
+print(site_meta[["site_id", "plot_id"]].sample(30))
+
+print(len(set(modis["plot_id"].str.lower())
+          & set(site_meta["plot_id"].str.lower())))
+
+print(len(set(hls_ndvi["site_id"].str.lower())
+          & set(site_meta["plot_id"].str.lower())))
+
+This shows mismatch between modis and hls sites -
+Lets create a clean master table
+
+master_sites = (
+    site_meta[
+        ["plot_id", "lat", "long", "mort_year_observed"]
+    ]
+    .copy()
+)
+
+master_sites["plot_id"] = (
+    master_sites["plot_id"]
+    .astype(str)
+    .str.lower()
+    .str.strip()
+)
+
+Find unmatched MODIS names - this is now the most useful diagnostic
+
+modis_ids = set(modis["plot_id"])
+meta_ids = set(master_sites["plot_id"])
+
+modis_unmatched = sorted(modis_ids - meta_ids)
+
+print(modis_unmatched)
+
+
+###Create a separate mapping dataframe
+
+crosswalk = pd.DataFrame({
+    "modis_id": [
+        "bam",
+        "boden",
+        "buck",
+        "cati",
+        "clair",
+        "craig",
+        "dendle",
+        "denk",
+        "denny",
+        "dwup",
+        "fich",
+        "furst",
+        "glent",
+        "graf",
+        "hass",
+        "inn",
+        "kat",
+        "ober",
+        "pinj",
+        "res5",
+        "sail1",
+        "ste",
+        "suc3",
+        "wald",
+        "weiss"
+    ],
+
+    "metadata_id": [
+        "bamberg",
+        "bodenwoehr",
+        "buckholt wood",
+        "catí",
+        "clairinshe",
+        "craigellachie",
+        "dendles wood",
+        "denklingen",
+        "denny woods",
+        "dwelling up (min)",
+        "fichtelberg",
+        "furstenfeldbruck",
+        "glen tanar",
+        "grafendorf",
+        "hassberge",
+        "innerberg",
+        "kätzler",
+        "oberschwarzach",
+        "pinjarra, severe",
+        "res-05",
+        "sailershausen1",
+        "steimüri",
+        "suc-03",
+        "waldleinigen",
+        "weissenburg"
+    ]
+})
+
+and check how many more sites become matched
+
+modis_fixed = modis.copy()
+
+lookup = dict(
+    zip(
+        crosswalk["modis_id"],
+        crosswalk["metadata_id"]
+    )
+)
+
+modis_fixed["plot_id"] = (
+    modis_fixed["plot_id"]
+    .replace(lookup)
+)
+
+Rerun code to check for common sites - should be a lot more
+
+modis_ids = set(modis_fixed["plot_id"])
+hls_ids = set(hls_ndvi["site_id"])
+
+print(len(modis_ids & hls_ids))
+
+###This is a much better match
+with the number of MODIS sites (91) This means the MODIS v HLS comparison is now using mostly all the same sites (92% coverage) instead of largely different site populations and characteristics.
+This is important as these could have been causing NDVI difference unrelated to the sensor and resolution difference.
+###Any differences now observed (after restricting to 84 sites)
+are likely to reflect real sensor effects (difference in resolution, mixed pixels in MODIS) or processing differences (different QA filtering, different smoothing, different aggregation methods) although these will be kept to a minimum through careful data processing.
+
+###Create matched subsets
+
+common_sites = (
+    set(modis_fixed["plot_id"])
+    .intersection(set(hls_ndvi["site_id"]))
+)
+
+modis_matched = modis_fixed[
+    modis_fixed["plot_id"].isin(common_sites)
+]
+
+hls_matched = hls_ndvi[
+    hls_ndvi["site_id"].isin(common_sites)
+]
+
+Check
+
+print(modis_matched["plot_id"].nunique())
+print(hls_matched["site_id"].nunique())
+
+###Annual site level aggregation
+this is the crucial step before plotting
+
+modis_matched[["event_date", "year", "mort_year observed"]].head()
+
+Fill the space in mort_year observed
+
+modis_matched["mort_year observed"] = pd.to_numeric(
+    modis_matched["mort_year observed"],
+    errors="coerce"
+)
+
+modis_matched["year"] = pd.to_numeric(
+    modis_matched["year"],
+    errors="coerce"
+)
+
+Then
+
+modis_matched["years_from_mortality"] = (
+    modis_matched["year"]
+    - modis_matched["mort_year observed"]
+)
+
+modis_matched["years_from_mortality"].value_counts().sort_index()
+
+modis_matched[
+    ["plot_id",
+     "year",
+     "mort_year observed",
+     "years_from_mortality"]
+].head(20)
+
+###Add mortality year from the metdata file
+First standardise names
+
+hls_ndvi["site_id"] = (
+    hls_ndvi["site_id"]
+    .astype(str)
+    .str.lower()
+    .str.strip()
+)
+
+site_meta["plot_id"] = (
+    site_meta["plot_id"]
+    .astype(str)
+    .str.lower()
+    .str.strip()
+)
+
+convert both to datetimes before merging
+
+modis_df["date"] = pd.to_datetime(modis_df["date"])
+hls_df["date"] = pd.to_datetime(hls_df["date"])
+
+Then merge
+
+hls_ndvi = hls_ndvi.merge(
+    site_meta[["plot_id", "mort_year_observed"]],
+    left_on="site_id",
+    right_on="plot_id",
+    how="left"
+)
+
+Check
+
+hls_ndvi[["site_id", "year", "mort_year_observed"]].head()
+
+###Convert mortality year to numeric
+
+hls_ndvi["mort_year_observed"] = pd.to_numeric(
+    hls_ndvi["mort_year_observed"],
+    errors="coerce"
+)
+
+print(hls_ndvi["mort_year_observed"].isna().sum())
+
+hls_ndvi.loc[
+    hls_ndvi["mort_year_observed"].isna(),
+    "mort_year_observed"
+]
+
+Check which sites are causing the NaNs
+
+unmatched_sites = (
+    hls_ndvi.loc[
+        hls_ndvi["mort_year_observed"].isna(),
+        "site_id"
+    ]
+    .unique()
+)
+
+print(len(unmatched_sites))
+print(sorted(unmatched_sites))
+
+Are they in the metadata or are they sites we have excluded due to mismatch pixwl issues?
+
+meta_sites = set(site_meta["plot_id"].str.lower())
+
+for s in sorted(unmatched_sites):
+    print(s, s in meta_sites)
+
+Check how many rows are still successfully matched:
+
+print(
+    hls_ndvi["mort_year_observed"].notna().sum()
+)
+
+and unmatched
+
+print(
+    hls_ndvi["mort_year_observed"].isna().sum()
+)
+
+Simply exclude unmatched sites
+
+hls_ndvi = hls_ndvi[
+    hls_ndvi["mort_year_observed"].notna()
+].copy()
+
+Create years from mortality
+
+hls_ndvi["years_from_mortality"] = (
+    hls_ndvi["year"]
+    - hls_ndvi["mort_year_observed"]
+)
+
+Check
+
+hls_ndvi["years_from_mortality"].value_counts().sort_index()
+
+###Restrict both datasets to matched sites
+
+modis_matched = modis_fixed[
+    modis_fixed["plot_id"].isin(common_sites)
+].copy()
+
+hls_matched = hls_ndvi[
+    hls_ndvi["site_id"].isin(common_sites)
+].copy()
+
+Check
+
+print(modis_matched["plot_id"].nunique())
+print(hls_matched["site_id"].nunique())
+
+###Restrict to a common temporal window - recommend -5 to +5 years
+
+Check MODIS columns
+
+print(modis_matched.columns.tolist())
+
+Years from mortality is not listed
+###Recreate it for MODIS
+
+modis_matched["year"] = pd.to_numeric(
+    modis_matched["year"],
+    errors="coerce"
+)
+
+modis_matched["mort_year observed"] = pd.to_numeric(
+    modis_matched["mort_year observed"],
+    errors="coerce"
+)
+
+modis_matched["years_from_mortality"] = (
+    modis_matched["year"]
+    - modis_matched["mort_year observed"]
+)
+
+Check
+
+print(
+    modis_matched["years_from_mortality"]
+    .value_counts()
+    .sort_index()
+)
+
+Check HLS has the column which is has
+
+print(hls_matched.columns.tolist())
+
+###Then subset to +/-5years
+
+modis_matched = modis_matched[
+    modis_matched["years_from_mortality"].between(-5, 5)
+]
+
+hls_matched = hls_matched[
+    hls_matched["years_from_mortality"].between(-5, 5)
+]
+
+Sanity check
+
+print(modis_matched["plot_id"].nunique())
+print(hls_matched["site_id"].nunique())
+
+print(
+    modis_matched["years_from_mortality"]
+    .value_counts()
+    .sort_index()
+)
+
+print(
+    hls_matched["years_from_mortality"]
+    .value_counts()
+    .sort_index()
+)
+
+This shows the data is now limited to -5 to +5 years
+
+###Finalise the NDVI comparison MODIS v HLS
+Create annual site means
+
+modis_site_year = (
+    modis_matched
+    .groupby(
+        ["plot_id", "years_from_mortality"],
+        as_index=False
+    )["ndvi"]
+    .mean()
+)
+
+hls_site_year = (
+    hls_matched
+    .groupby(
+        ["site_id", "years_from_mortality"],
+        as_index=False
+    )["NDVI"]
+    .mean()
+)
+
+###Calculate mean, SD and sample size
+
+modis_trend = (
+    modis_site_year
+    .groupby("years_from_mortality")["ndvi"]
+    .agg(["mean", "std", "count"])
+    .reset_index()
+)
+
+hls_trend = (
+    hls_site_year
+    .groupby("years_from_mortality")["NDVI"]
+    .agg(["mean", "std", "count"])
+    .reset_index()
+)
+
+###Plot MODIS v HLS NDVI
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(8,5))
+
+plt.plot(
+    modis_trend["years_from_mortality"],
+    modis_trend["mean"],
+    color="blue",
+    label="MODIS"
+)
+
+plt.fill_between(
+    modis_trend["years_from_mortality"],
+    modis_trend["mean"] - modis_trend["std"],
+    modis_trend["mean"] + modis_trend["std"],
+    color="blue",
+    alpha=0.2
+)
+
+plt.plot(
+    hls_trend["years_from_mortality"],
+    hls_trend["mean"],
+    color="green",
+    label="HLS"
+)
+
+plt.fill_between(
+    hls_trend["years_from_mortality"],
+    hls_trend["mean"] - hls_trend["std"],
+    hls_trend["mean"] + hls_trend["std"],
+    color="green",
+    alpha=0.2
+)
+
+plt.axvline(0, color="red", linestyle="--")
+
+plt.xlabel("Years from mortality")
+plt.ylabel("NDVI")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+###Plot sample size
+
+fig, ax = plt.subplots(figsize=(8,4))
+
+ax.plot(
+    modis_trend["years_from_mortality"],
+    modis_trend["count"],
+    marker="o",
+    color="blue",
+    label="MODIS"
+)
+
+ax.plot(
+    hls_trend["years_from_mortality"],
+    hls_trend["count"],
+    marker="o",
+    color="green",
+    label="HLS"
+)
+
+ax.axvline(0, color="red", linestyle="--")
+
+ax.set_xlabel("Years from mortality")
+ax.set_ylabel("Number of sites")
+ax.legend()
+
+plt.tight_layout()
+plt.show()
+
+###Calculate bias between MODIS and HLS
+Merge annual means
+
+comparison = pd.merge(
+    modis_site_year,
+    hls_site_year,
+    left_on=["plot_id","years_from_mortality"],
+    right_on=["site_id","years_from_mortality"]
+)
+
+Rename for convenience
+
+comparison = comparison.rename(
+    columns={
+        "ndvi":"MODIS",
+        "NDVI":"HLS"
+    }
+)
+
+Calculate bias
+
+comparison["bias"] = (
+    comparison["MODIS"]
+    - comparison["HLS"]
+)
+
+print(
+    comparison["bias"].mean()
+)
+
+###Correlation and R2
+
+from scipy.stats import pearsonr
+
+r, p = pearsonr(
+    comparison["MODIS"],
+    comparison["HLS"]
+)
+
+print("r =", round(r,3))
+print("p =", p)
+
+print("R² =", round(r**2,3))
+
+###Root of mean squared error (RMSE)
+
+from sklearn.metrics import mean_squared_error
+from math import sqrt
+
+rmse = sqrt(
+    mean_squared_error(
+        comparison["MODIS"],
+        comparison["HLS"]
+    )
+)
+
+print("RMSE =", round(rmse,3))
+
+###Scatterplot - very useful figure
+
+plt.figure(figsize=(5,5))
+
+plt.scatter(
+    comparison["HLS"],
+    comparison["MODIS"],
+    alpha=0.5
+)
+
+lims = [
+    min(comparison["HLS"].min(),
+        comparison["MODIS"].min()),
+    max(comparison["HLS"].max(),
+        comparison["MODIS"].max())
+]
+
+plt.plot(lims, lims, "r--")
+
+plt.xlabel("HLS NDVI")
+plt.ylabel("MODIS NDVI")
+
+plt.tight_layout()
+plt.show()
+
+
+###Simple pre-mortality trend analysis
+
+pre_modis = modis_site_year[
+    modis_site_year["years_from_mortality"] <= 0
+]
+
+pre_hls = hls_site_year[
+    hls_site_year["years_from_mortality"] <= 0
+]
+
+Fit trends
+
+from scipy.stats import linregress
+
+slope_m, intercept_m, r_m, p_m, _ = linregress(
+    pre_modis["years_from_mortality"],
+    pre_modis["ndvi"]
+)
+
+slope_h, intercept_h, r_h, p_h, _ = linregress(
+    pre_hls["years_from_mortality"],
+    pre_hls["NDVI"]
+)
+
+print("MODIS slope =", slope_m)
+print("MODIS p =", p_m)
+
+print("HLS slope =", slope_h)
+print("HLS p =", p_h)
+
+###Mortality aligned trajectories may reveal more about the relationship between MODIS and HLS NDVI
+
+print(modis_trend.head())
+print(hls_trend.head())
+
+Calculate standard error of the mean (SEM)
+
+import numpy as np
+
+modis_trend["se"] = (
+    modis_trend["std"]
+    / np.sqrt(modis_trend["count"])
+)
+
+hls_trend["se"] = (
+    hls_trend["std"]
+    / np.sqrt(hls_trend["count"])
+)
+
+and 95% confidence intervals
+
+modis_trend["ci"] = 1.96 * modis_trend["se"]
+
+hls_trend["ci"] = 1.96 * hls_trend["se"]
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10,6))
+
+# MODIS
+plt.plot(
+    modis_trend["years_from_mortality"],
+    modis_trend["mean"],
+    color="blue",
+    label="MODIS NDVI"
+)
+
+plt.fill_between(
+    modis_trend["years_from_mortality"],
+    modis_trend["mean"] - modis_trend["ci"],
+    modis_trend["mean"] + modis_trend["ci"],
+    color="blue",
+    alpha=0.2,
+    label="modis SE"
+)
+
+plt.fill_between(
+    hls_trend["years_from_mortality"],
+    hls_trend["mean"] - hls_trend["ci"],
+    hls_trend["mean"] + hls_trend["ci"],
+    color="green",
+    alpha=0.2,
+    label="hls SE"
+)
+# HLS
+plt.plot(
+    hls_trend["years_from_mortality"],
+    hls_trend["mean"],
+    color="green",
+    label="HLS NDVI"
+)
+
+
+plt.axvline(
+    x=0,
+    color="red",
+    linestyle="--",
+    label="Mortality year"
+)
+
+plt.xlabel("Years from mortality")
+plt.ylabel("NDVI")
+plt.title("MODIS vs HLS NDVI trajectories")
+plt.legend()
+
+plt.show()
+
+plt.savefig("modis_hls_ndvi.png", dpi=300, bbox_inches="tight")
+plt.show()
+
+
+###Normalised trajectory will remove the large MODIS-HLS offset
+This allows comparison of shape of mortality response which is what we want to inform ecological interpretation.
+
+###Option 1 - Simple anomaly relative to year 5
+
+# MODIS baseline
+modis_baseline = modis_trend.loc[
+    modis_trend["years_from_mortality"] == -5,
+    "mean"
+].iloc[0]
+
+# HLS baseline
+hls_baseline = hls_trend.loc[
+    hls_trend["years_from_mortality"] == -5,
+    "mean"
+].iloc[0]
+
+# Calculate anomalies
+modis_trend["anomaly"] = (
+    modis_trend["mean"] - modis_baseline
+)
+
+hls_trend["anomaly"] = (
+    hls_trend["mean"] - hls_baseline
+)
+
+Plot the anomalies
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10,6))
+
+plt.plot(
+    modis_trend["years_from_mortality"],
+    modis_trend["anomaly"],
+    color="blue",
+    linewidth=2,
+    label="MODIS"
+)
+
+plt.plot(
+    hls_trend["years_from_mortality"],
+    hls_trend["anomaly"],
+    color="green",
+    linewidth=2,
+    label="HLS"
+)
+
+plt.axhline(
+    y=0,
+    color="black",
+    linestyle=":"
+)
+
+plt.axvline(
+    x=0,
+    color="red",
+    linestyle="--",
+    label="Mortality year"
+)
+
+plt.xlabel("Years from mortality")
+plt.ylabel("NDVI anomaly")
+plt.title("MODIS vs HLS NDVI anomalies")
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+###Option 2 (better for publication) Site-level anomalies first
+This negates the problem that some sites naturally have higher NDVI than others
+
+modis_site_year["ndvi_anom"] = (
+    modis_site_year["ndvi"]
+    - modis_site_year.groupby("plot_id")["ndvi"]
+      .transform("mean")
+)
+
+hls_site_year["ndvi_anom"] = (
+    hls_site_year["NDVI"]
+    - hls_site_year.groupby("site_id")["NDVI"]
+      .transform("mean")
+)
+
+Average the anomalies
+
+modis_anom = (
+    modis_site_year
+    .groupby("years_from_mortality")["ndvi_anom"]
+    .agg(["mean","std","count"])
+    .reset_index()
+)
+
+hls_anom = (
+    hls_site_year
+    .groupby("years_from_mortality")["ndvi_anom"]
+    .agg(["mean","std","count"])
+    .reset_index()
+)
+
+print(modis_site_year.columns)
+print(hls_site_year.columns)
+
+Create anomaly summaries
+
+modis_anom = (
+    modis_site_year
+    .groupby("years_from_mortality")["ndvi_anom"]
+    .agg(["mean", "std", "count"])
+    .reset_index()
+)
+
+hls_anom = (
+    hls_site_year
+    .groupby("years_from_mortality")["ndvi_anom"]
+    .agg(["mean", "std", "count"])
+    .reset_index()
+)
+
+Add confidence intervals
+
+import numpy as np
+
+modis_anom["se"] = (
+    modis_anom["std"] /
+    np.sqrt(modis_anom["count"])
+)
+
+hls_anom["se"] = (
+    hls_anom["std"] /
+    np.sqrt(hls_anom["count"])
+)
+
+modis_anom["ci"] = 1.96 * modis_anom["se"]
+hls_anom["ci"] = 1.96 * hls_anom["se"]
+
+Then plot
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10,6))
+
+plt.plot(
+    modis_anom["years_from_mortality"],
+    modis_anom["mean"],
+    color="blue",
+    label="MODIS"
+)
+
+plt.fill_between(
+    modis_anom["years_from_mortality"],
+    modis_anom["mean"] - modis_anom["ci"],
+    modis_anom["mean"] + modis_anom["ci"],
+    color="blue",
+    alpha=0.2
+)
+
+plt.plot(
+    hls_anom["years_from_mortality"],
+    hls_anom["mean"],
+    color="green",
+    label="HLS"
+)
+
+plt.fill_between(
+    hls_anom["years_from_mortality"],
+    hls_anom["mean"] - hls_anom["ci"],
+    hls_anom["mean"] + hls_anom["ci"],
+    color="green",
+    alpha=0.2
+)
+
+plt.axvline(0, color="red", linestyle="--")
+plt.axhline(0, color="black", linestyle=":")
+
+plt.xlabel("Years from mortality")
+plt.ylabel("NDVI anomaly")
+plt.title("MODIS vs HLS NDVI anomalies")
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+###Site level comparisons
+This is where the difference (if there is any) between MODIS and HLS will manifest.
+Lets start with a single site e.g. Bamberg
+
+site_modis = modis_matched[
+    modis_matched["plot_id"] == "bamberg"
+].copy()
+
+
+site_hls = hls_matched[
+    hls_matched["site_id"] == "bamberg"
+].copy()
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10,5))
+
+plt.scatter(
+    site_modis["years_from_mortality"],
+    site_modis["ndvi"],
+    color="blue",
+    alpha=0.4,
+    label="MODIS"
+)
+
+plt.scatter(
+    site_hls["years_from_mortality"],
+    site_hls["NDVI"],
+    color="green",
+    alpha=0.4,
+    label="HLS"
+)
+
+plt.axvline(
+    0,
+    color="red",
+    linestyle="--"
+)
+
+plt.xlabel("Years from mortality")
+plt.ylabel("NDVI")
+plt.title("Bamberg")
+plt.legend()
+
+plt.show()
+
+
+###Option 2: Annual means for a site
+This is usually cleaner
+
+site_modis_annual = (
+    site_modis
+    .groupby("years_from_mortality")["ndvi"]
+    .mean()
+    .reset_index()
+)
+
+site_hls_annual = (
+    site_hls
+    .groupby("years_from_mortality")["NDVI"]
+    .mean()
+    .reset_index()
+)
+
+
+plt.figure(figsize=(10,5))
+
+plt.plot(
+    site_modis_annual["years_from_mortality"],
+    site_modis_annual["ndvi"],
+    "-o",
+    color="blue",
+    label="MODIS"
+)
+
+plt.plot(
+    site_hls_annual["years_from_mortality"],
+    site_hls_annual["NDVI"],
+    "-o",
+    color="green",
+    label="HLS"
+)
+
+plt.axvline(0, color="red", linestyle="--", label="Observed mortality")
+
+plt.xlabel("Bamberg - Years pre and post observed mortality",fontsize=14)
+plt.ylabel("NDVI",fontsize=14)
+
+plt.legend(fontsize=12,loc="center left")
+
+plt.savefig(
+    "MODIS_HLS_Figure6_Zwiesel2.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+plt.show()
+
+###FInd the sites with the largest changes - this is comparing year 0 - year 1.
+
+pivot = hls_site_year.pivot(
+    index="site_id",
+    columns="years_from_mortality",
+    values="NDVI"
+)
+
+pivot["change"] = pivot[1] - pivot[0]
+
+pivot.sort_values("change").head(15)
+
+import matplotlib.pyplot as plt
+
+sites = [
+    "bamberg",
+    "harz_mort",
+    "sailershausen1",
+    "wald_mort"
+]
+
+fig, axes = plt.subplots(
+    2, 2,
+    figsize=(12,8),
+    sharex=True,
+    sharey=True
+    )
+plt.ylim(0.20, 0.85)
+axes = axes.flatten()
+
+for ax, site in zip(axes, sites):
+
+    mod = (
+        modis_site_year[
+            modis_site_year["plot_id"] == site
+        ]
+    )
+
+    hls = (
+        hls_site_year[
+            hls_site_year["site_id"] == site
+        ]
+    )
+
+    ax.plot(
+        mod["years_from_mortality"],
+        mod["ndvi"],
+        "-o",
+        color="blue",
+        label="MODIS"
+    )
+
+    ax.plot(
+        hls["years_from_mortality"],
+        hls["NDVI"],
+        "-o",
+        color="green",
+        label="HLS"
+    )
+    ax.set_xticks(range(-5, 6))
+    ax.axvline(
+        0,
+        color="red",
+        linestyle="--",
+        label="Observed mortality"
+    )
+    #plt.ylim(0.10, 0.85)
+    ax.set_title(site,fontsize=12)
+
+
+
+axes[0].legend(fontsize=12)
+plt.xlabel("Years pre and post observed mortality",fontsize=14)
+plt.ylabel("NDVI",fontsize=14)
+plt.tight_layout()
+plt.show()
+
+Lets try pre and post mortality too, as some sites may not show strongest decline within just one year. This is all years pre and all years post.
+
+pivot = hls_site_year.pivot(
+    index="site_id",
+    columns="years_from_mortality",
+    values="NDVI"
+)
+
+pivot["change"] = pivot[2] - pivot[0]
+
+pivot.sort_values("change").head(15)
+
+###Create a 2x2 panel
+
+import matplotlib.pyplot as plt
+
+sites = [
+    "denny woods",
+    "mach",
+    "oberschwarzach",
+    "sailershausen1",
+]
+
+fig, axes = plt.subplots(
+    2, 2,
+    figsize=(12,8),
+    sharex=True,
+    sharey=True
+    )
+plt.ylim(0.15, 0.85)
+axes = axes.flatten()
+
+for ax, site in zip(axes, sites):
+
+    mod = (
+        modis_site_year[
+            modis_site_year["plot_id"] == site
+        ]
+    )
+
+    hls = (
+        hls_site_year[
+            hls_site_year["site_id"] == site
+        ]
+    )
+
+    ax.plot(
+        mod["years_from_mortality"],
+        mod["ndvi"],
+        "-o",
+        color="blue",
+        label="MODIS"
+    )
+
+    ax.plot(
+        hls["years_from_mortality"],
+        hls["NDVI"],
+        "-o",
+        color="green",
+        label="HLS"
+    )
+    ax.set_xticks(range(-5, 6))
+    ax.axvline(
+        0,
+        color="red",
+        linestyle="--",
+        label="Observed mortality"
+    )
+    #plt.ylim(0.10, 0.85)
+    ax.set_title(site,fontsize=12)
+
+
+
+axes[0].legend(fontsize=12)
+plt.xlabel("Years pre and post observed mortality",fontsize=14)
+plt.ylabel("NDVI",fontsize=14)
+plt.tight_layout()
+plt.show()
+
+print(modis_matched.shape)
+print(hls_matched.shape)
+
+print(modis_matched.head())
+print(hls_matched.head())
+
+print(
+    sorted(modis["plot_id"].unique())[:50]
+)
+
+print(
+    [x for x in modis["plot_id"].unique()
+     if "craig" in str(x).lower()]
+)
+
+print(
+    [x for x in hls_ndvi["plot_id"].unique()
+     if "craig" in str(x).lower()]
+)
+
+Use original dataset
+
+craig_modis = modis[
+    modis["plot_id"] == "craig"
+].copy()
+
+print(craig_modis.shape)
+
+[x for x in hls_ndvi["plot_id"].unique()
+ if "craigellachie" in str(x).lower()]
+
+craigellachie_hls = hls_ndvi[
+    hls_ndvi["plot_id"] == "craigellachie"
+].copy()
+
+craigellachie_hls = hls_ndvi[
+    hls_ndvi["site_id"] == "craigellachie"
+].copy()
+
+print(craig_modis.shape)
+print(craigellachie_hls.shape)
+
+Aggregate by year
+
+craig_modis_annual = (
+    craig_modis
+    .groupby("year", as_index=False)["ndvi"]
+    .mean()
+)
+
+craigellachie_hls_annual = (
+    craigellachie_hls
+    .groupby("year", as_index=False)["NDVI"]
+    .mean()
+)
+
+check
+
+print(craig_modis_annual.head())
+print(craigellachie_hls_annual.head())
+
+quick trial plot
+
+plt.figure(figsize=(8,5))
+
+plt.plot(
+    craig_modis_annual["year"],
+    craig_modis_annual["ndvi"],
+    "-o",
+    color="forestgreen",
+    label="MODIS"
+)
+
+plt.plot(
+    craigellachie_hls_annual["year"],
+    craigellachie_hls_annual["NDVI"],
+    "-o",
+    color="black",
+    label="HLS"
+)
+
+plt.axvline(
+    2018,
+    color="red",
+    linestyle="--",
+    label="Mortality"
+)
+
+plt.xlabel("Year")
+plt.ylabel("NDVI")
+plt.legend()
+
+plt.show()
+
+Normalise the values otherwise all focus will be on the difference between the HLS and MODIS NDVI values.
+
+craig_modis_annual["anom"] = (
+    craig_modis_annual["ndvi"]
+    - craig_modis_annual["ndvi"].iloc[0]
+)
+
+craigellachie_hls_annual["anom"] = (
+    craigellachie_hls_annual["NDVI"]
+    - craigellachie_hls_annual["NDVI"].iloc[0]
+)
+
+then plot anom instead of raw NDVI giving us change relative to baseline which is more relevnt and reliable representation of two set of data from different sources?
+
+import matplotlib.pyplot as plt
+
+# ---------------------------
+# Create anomalies
+# ---------------------------
+
+craig_modis_plot = craig_modis_annual.copy()
+craigellachie_hls_plot = craigellachie_hls_annual.copy()
+
+# First available year as baseline
+modis_baseline = craig_modis_plot["ndvi"].iloc[0]
+hls_baseline = craigellachie_hls_plot["NDVI"].iloc[0]
+
+craig_modis_plot["anom"] = (
+    craig_modis_plot["ndvi"] - modis_baseline
+)
+
+craigellachie_hls_plot["anom"] = (
+    craigellachie_hls_plot["NDVI"] - hls_baseline
+)
+
+# ---------------------------
+# Plot
+# ---------------------------
+
+fig, ax = plt.subplots(figsize=(9, 5))
+
+# Post-mortality period
+ax.axvspan(
+    2020,
+    craig_modis_plot["year"].max(),
+    color="red",
+    alpha=0.10,
+    label="Post-mortality period"
+)
+
+# MODIS
+ax.plot(
+    craig_modis_plot["year"],
+    craig_modis_plot["anom"],
+    "-o",
+    color="forestgreen",
+    linewidth=2,
+    markersize=6,
+    label="MODIS"
+)
+
+# HLS
+ax.plot(
+    craigellachie_hls_plot["year"],
+    craigellachie_hls_plot["anom"],
+    "-o",
+    color="black",
+    linewidth=2,
+    markersize=6,
+    label="HLS"
+)
+
+# Mortality marker
+ax.axvline(
+    2020,
+    color="red",
+    linestyle="--",
+    linewidth=2,
+    label="Observed mortality"
+)
+
+# Zero line
+ax.axhline(
+    0,
+    color="grey",
+    linestyle=":",
+    linewidth=1
+)
+
+ax.set_xlabel("Year", fontsize=12)
+ax.set_ylabel("NDVI anomaly", fontsize=12)
+
+ax.set_title(
+    "Craigellachie site: MODIS and HLS NDVI anomalies",
+    fontsize=14
+)
+
+ax.legend(frameon=True)
+ax.grid(alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+Normalise the means and show percentage change rather than raw anomalies as this will take into account the different NDVI scales for MODIS and HLS.
+
+import matplotlib.pyplot as plt
+
+# --------------------------------------------------
+# Pre-mortality baseline
+# --------------------------------------------------
+
+MORTALITY_YEAR = 2020
+
+harz_modis_plot = craig_modis_annual.copy()
+harz_hls_plot = craigellachie_hls_annual.copy()
+
+# Mean NDVI before mortality
+
+modis_baseline = (
+    craig_modis_plot
+    .loc[craig_modis_plot["year"] < MORTALITY_YEAR, "ndvi"]
+    .mean()
+)
+
+hls_baseline = (
+    craigellachie_hls_plot
+    .loc[craigellachie_hls_plot["year"] < MORTALITY_YEAR, "NDVI"]
+    .mean()
+)
+
+# Calculate percentage change
+
+craig_modis_plot["pct_change"] = (
+    100 *
+    (craig_modis_plot["ndvi"] - modis_baseline)
+    / modis_baseline
+)
+
+craigellachie_hls_plot["pct_change"] = (
+    100 *
+    (craigellachie_hls_plot["NDVI"] - hls_baseline)
+    / hls_baseline
+)
+
+# --------------------------------------------------
+# Plot
+# --------------------------------------------------
+
+fig, ax = plt.subplots(figsize=(9, 5))
+
+# Shade post-mortality period
+
+ax.axvspan(
+    MORTALITY_YEAR,
+    max(
+        craig_modis_plot["year"].max(),
+        craigellachie_hls_plot["year"].max()
+    ),
+    color="red",
+    alpha=0.10,
+    label="Post-mortality period"
+)
+
+# MODIS
+
+ax.plot(
+    craig_modis_plot["year"],
+    craig_modis_plot["pct_change"],
+    "-o",
+    color="forestgreen",
+    linewidth=2,
+    markersize=6,
+    label="MODIS"
+)
+
+# HLS
+
+ax.plot(
+    craigellachie_hls_plot["year"],
+    craigellachie_hls_plot["pct_change"],
+    "-o",
+    color="black",
+    linewidth=2,
+    markersize=6,
+    label="HLS"
+)
+
+# Mortality year
+
+ax.axvline(
+    MORTALITY_YEAR,
+    color="red",
+    linestyle="--",
+    linewidth=2,
+    label="Observed mortality (2020)"
+)
+
+# Reference line
+
+ax.axhline(
+    0,
+    color="grey",
+    linestyle=":",
+    linewidth=1
+)
+
+ax.set_xlabel("Year", fontsize=12)
+ax.set_ylabel(
+    "NDVI change from pre-mortality baseline (%)",
+    fontsize=12
+)
+
+ax.set_title(
+    "Craigellachie: percentage change in NDVI relative to pre-mortality baseline",
+    fontsize=14
+)
+
+ax.grid(alpha=0.3)
+
+ax.legend(
+    loc="best",
+    frameon=True
+)
+
+plt.tight_layout()
+plt.show()
+
+Combine the spatial images and trajectory figure in one panel
+
+from PIL import Image
+
+base = "/content/drive/MyDrive/HLS_MODIS_Figures/"
+
+modis17 = Image.open(base + "modis_ndvi_2017.png")
+modis22 = Image.open(base + "modis_ndvi_2023.png")
+
+hls17 = Image.open(base + "hls_ndvi_2017.png")
+hls22 = Image.open(base + "hls_ndvi_2023.png")
+
+print("Images loaded successfully")
+
+import matplotlib.pyplot as plt
+
+fig = plt.figure(figsize=(11, 13))
+
+gs = fig.add_gridspec(
+    3,
+    2,
+    height_ratios=[1, 1, 1]
+)
+
+# ------------------------
+# Spatial maps
+# ------------------------
+
+ax1 = fig.add_subplot(gs[0, 0])
+ax2 = fig.add_subplot(gs[0, 1])
+
+ax3 = fig.add_subplot(gs[1, 0])
+ax4 = fig.add_subplot(gs[1, 1])
+
+# ------------------------
+# Trajectory
+# ------------------------
+
+ax5 = fig.add_subplot(gs[2, :])
+
+# Top row
+
+ax1.imshow(modis17)
+ax1.set_title("A. 2017", fontsize=13, fontweight="bold")
+
+ax2.imshow(modis22)
+ax2.set_title("B. 2023", fontsize=13, fontweight="bold")
+
+# Middle row
+
+ax3.imshow(hls17)
+ax3.set_title("C. 2017", fontsize=13, fontweight="bold")
+
+ax4.imshow(hls22)
+ax4.set_title("D. 2023", fontsize=13, fontweight="bold")
+
+for ax in [ax1, ax2, ax3, ax4]:
+    ax.axis("off")
+
+# ------------------------
+# Bottom trajectory plot
+# ------------------------
+
+MORTALITY_YEAR = 2020
+
+ax5.axvspan(
+    MORTALITY_YEAR,
+    max(
+        craig_modis_plot["year"].max(),
+        craigellachie_hls_plot["year"].max()
+    ),
+    color="red",
+    alpha=0.15,
+    label="Post-mortality period"
+)
+
+ax5.plot(
+    craig_modis_plot["year"],
+    craig_modis_plot["pct_change"],
+    "-o",
+    color="forestgreen",
+    linewidth=2,
+    label="MODIS"
+)
+
+ax5.plot(
+    craigellachie_hls_plot["year"],
+    craigellachie_hls_plot["pct_change"],
+    "-o",
+    color="black",
+    linewidth=2,
+    label="HLS"
+)
+
+ax5.axvline(
+    MORTALITY_YEAR,
+    color="red",
+    linestyle="--",
+    linewidth=2,
+    label="Observed mortality"
+)
+
+ax5.axhline(
+    0,
+    color="grey",
+    linestyle=":",
+    linewidth=1
+)
+
+ax5.set_xlabel("Year", fontsize=12)
+
+ax5.set_ylabel(
+    "NDVI change from pre-mortality baseline (%)",
+    fontsize=12
+)
+
+ax5.grid(alpha=0.3)
+
+ax5.legend(
+    loc="lower left",
+    frameon=True,
+    fontsize=11
+)
+
+ax5.set_title(
+    "E. NDVI response to disturbance",
+    fontsize=13
+)
+
+fig.suptitle(
+    "Craigellachie: spatial and temporal comparison of MODIS and HLS NDVI",
+    fontsize=16,
+    y=0.98
+)
+
+fig.text(
+    0.03,
+    0.77,
+    "MODIS",
+    fontsize=15,
+    fontweight="bold",
+    rotation=90
+)
+
+fig.text(
+    0.03,
+    0.49,
+    "HLS",
+    fontsize=15,
+    fontweight="bold",
+    rotation=90
+)
+
+plt.tight_layout()
+
+plt.savefig(
+    "Craigellachie_Spatial_Temporal_Figure_v1.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.savefig(
+    "Craigellachie_Spatial_Temporal_Figure_600dpi_v1.png",
+    dpi=600,
+    bbox_inches="tight"
+)
+
+import matplotlib as mpl
+
+cmap = mpl.colors.LinearSegmentedColormap.from_list(
+    "ndvi",
+    [
+        "#8c510a",
+        "#d8b365",
+        "#f6e8c3",
+        "#c7e9ad",
+        "#78c679",
+        "#238443"
+    ]
+)
+
+norm = mpl.colors.Normalize(
+    vmin=0,
+    vmax=1
+)
+
+# colourbar axis
+cax = fig.add_axes(
+    [0.25, 0.67, 0.5, 0.010]
+)
+
+
+cb = mpl.colorbar.ColorbarBase(
+    cax,
+    cmap=cmap,
+    norm=norm,
+    orientation="horizontal"
+)
+
+cb.set_label(
+    "NDVI",
+    fontsize=10
+)
+
+plt.show()
+plt.savefig(
+    "Craigellachie_Spatial_Temporal_Panel_Final.png",
+    dpi=600,
+    bbox_inches="tight"
+)
+
+plt.savefig(
+    "Figure_Harz_Spatial_Temporal_Final.png",
+    dpi=600,
+    bbox_inches="tight"
+)
