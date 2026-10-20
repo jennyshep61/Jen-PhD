@@ -1,0 +1,10 @@
+MODIS-HLS SG-STL processing
+
+1. MODIS observations were aggregated to monthly plot means; HLS monthly observations were retained.
+2. Sites were matched using site_crosswalk.csv and aligned to the MODIS master observed mortality year.
+3. The analysis window was restricted to four years before through five years after mortality and to dates shared by both sensor records.
+4. Missing months were linearly interpolated only to create regular monthly series for filtering/decomposition.
+5. A Savitzky-Golay filter (7-month window, second-order polynomial) was applied.
+6. Robust STL decomposition used a 12-month period and seasonal window 13.
+7. STL trends were centred on their mean across months -24 to -1.
+8. Eligibility required >=60 common-window months, <=20% missing observations for each sensor, and >=12 observed pre-event months for each sensor.
